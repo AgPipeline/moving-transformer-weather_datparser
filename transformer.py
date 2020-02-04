@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+from urllib.parse import urlparse
 from typing import Optional, Union
 from parser import aggregate, parse_file
 import requests
@@ -43,17 +44,22 @@ class __internal__:
         """Initializes class instance"""
 
     @staticmethod
-    def get_file_to_load(file_list: list) -> Optional[str]:
-        """Returns the name of the file to load from the list of files
+    def get_all_files_to_load(file_list: list) -> list:
+        """Returns the list of the file and folders to look through for matching file names
         Arguments:
             file_list: the list of file names to look through
         Return:
-            Returns the first found file that matches the searching criteria
+            Returns the list of files that match the searching criteria
         """
+        found_files = []
         for one_file in file_list:
-            if one_file.endswith(WEATHER_FILENAME_END):
-                return one_file
-        return None
+            if os.path.isdir(one_file):
+                for one_sub_file in os.listdir(one_file):
+                    if one_sub_file.endswith(WEATHER_FILENAME_END):
+                        found_files.append(os.path.join(one_file, one_sub_file))
+            elif one_file.endswith(WEATHER_FILENAME_END):
+                found_files.append(one_file)
+        return found_files
 
     @staticmethod
     def terraref_sensor_display_name(sensor_name: str, site_name: str) -> str:
@@ -76,23 +82,34 @@ class __internal__:
         Return:
             Returns the formatted URL (guaranteed to not have a trailing slash)
         """
-        def url_join(url_parts: tuple) -> str:
+        def url_join(base_url: str, url_parts: tuple) -> str:
             """Internal function to create URLs in a consistent fashion
             Arguments:
                 url_parts: the parts of the URL to join
             Return:
                 The formatted URL
             """
-            return '/'.join(url_parts).replace('//', '/').rstrip('/')
+            built_url = ''
+            base_parse = urlparse(base_url)
+            if base_parse.scheme:
+                built_url = base_parse.scheme + '://'
+            if base_parse.netloc:
+                built_url += base_parse.netloc + '/'
+            if base_parse.path and not base_parse.path == '/':
+                built_url += base_parse.path.lstrip('/') + '/'
+
+            joined_parts = '/'.join(url_parts).replace('//', '/').strip('/')
+
+            return built_url + joined_parts
 
         if not url_particles:
-            return url_join(tuple(base_url))
+            return url_join(base_url, tuple(GEOSTREAMS_API_URL_PARTICLE))
 
         if isinstance(url_particles, str):
-            return url_join((base_url, url_particles))
+            return url_join(base_url, (GEOSTREAMS_API_URL_PARTICLE, url_particles))
 
         formatted_particles = tuple(str(part) for part in url_particles)
-        return url_join((base_url, GEOSTREAMS_API_URL_PARTICLE) + formatted_particles)
+        return url_join(base_url, tuple(GEOSTREAMS_API_URL_PARTICLE) + formatted_particles)
 
     @staticmethod
     def _common_geostreams_name_get(clowder_url: str, clowder_key: str, url_endpoint: str, name_query_key: str, name: str) -> \
@@ -138,14 +155,15 @@ class __internal__:
         if clowder_key:
             url = url + '?key=' + clowder_key
 
+        logging.debug("Calling geostreams create url '%s' with params", url)
         result = requests.post(url,
-                               header={'Content-type': 'application/json'},
+                               headers={'Content-type': 'application/json'},
                                data=request_body)
         result.raise_for_status()
 
         result_id = None
         result_json = result.json()
-        if 'id' in result_json:
+        if isinstance(result_json, dict) and 'id' in result_json:
             result_id = result_json['id']
             logging.debug("Created GeoStreams %s: id = '%s'", url_endpoint, result_id)
         else:
@@ -259,8 +277,6 @@ def add_parameters(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--site_override', default=TERRAREF_SITE,
                         help="override the site name (default '%s')" % TERRAREF_SITE)
 
-    parser.epilog = "Processing one irrigation file at a time"
-
     # Here we specify a default metadata file that we provide to get around the requirement while also allowing overrides
     # pylint: disable=protected-access
     for action in parser._actions:
@@ -279,10 +295,10 @@ def check_continue(transformer: transformer_class.Transformer, check_md: dict) -
         an error message if there's an error
     """
     # pylint: disable=unused-argument
-    if __internal__.get_file_to_load(check_md['list_files']()):
+    if __internal__.get_all_files_to_load(check_md['list_files']()):
         return tuple([0])
 
-    return -1, "No irrigation CSV file was found in list of files to process (file name must match '*%s')" % \
+    return -1, "No weather files was found in list of files to process (file name must match '*%s')" % \
            WEATHER_FILENAME_END
 
 
@@ -296,9 +312,9 @@ def perform_process(transformer: transformer_class.Transformer, check_md: dict) 
     """
     start_timestamp = datetime.datetime.now()
     all_files = check_md['list_files']()
-    received_files_count = len(all_files)
+    received_files_dirs_count = len(all_files)
 
-    file_to_load = __internal__.get_file_to_load(all_files)
+    file_to_load = __internal__.get_all_files_to_load(all_files)
 
     # TODO: Get this from Clowder fixed metadata]
     main_coords = [-111.974304, 33.075576, 361]
@@ -341,9 +357,11 @@ def perform_process(transformer: transformer_class.Transformer, check_md: dict) 
             # We are done with all the files, pass None to let aggregation wrap up any work left.
             records = None
         else:
+            logging.debug("Working on file '%s'", one_file)
             # Parse one file and get all the records in it.
             records = parse_file(one_file, utc_offset=ISO_8601_UTC_OFFSET)
 
+        logging.debug("    performing aggregation call")
         aggregation_result = aggregate(
             cutoffSize=transformer.args.agg_cutoff * 60,  # Cutoff size is in seconds
             tz=ISO_8601_UTC_OFFSET,
@@ -355,6 +373,7 @@ def perform_process(transformer: transformer_class.Transformer, check_md: dict) 
 
         # Add props to each record.
         data_point_list = []
+        logging.debug("    checking aggregated records")
         for record in aggregation_records:
             record['properties']['source_file'] = one_file
             cleaned_properties = {}
@@ -373,10 +392,13 @@ def perform_process(transformer: transformer_class.Transformer, check_md: dict) 
                 "properties": cleaned_properties
             })
             if len(data_point_list) > transformer.args.batchsize:
+                logging.debug("Adding %s data points", str(len(data_point_list)))
                 __internal__.create_data_points(transformer.args.clowder_url, transformer.args.clowder_key, stream_id, data_point_list)
                 datapoint_count += len(data_point_list)
                 data_point_list = []
+        logging.debug("Number of points: %s vs max: %s", str(len(data_point_list)), str(transformer.args.batchsize))
         if len(data_point_list) > 0:
+            logging.debug("Adding %s remaining data points", str(len(data_point_list)))
             __internal__.create_data_points(transformer.args.clowder_url, transformer.args.clowder_key, stream_id, data_point_list)
             datapoint_count += len(data_point_list)
 
@@ -385,7 +407,7 @@ def perform_process(transformer: transformer_class.Transformer, check_md: dict) 
                 'version': configuration.TRANSFORMER_VERSION,
                 'utc_timestamp': datetime.datetime.utcnow().isoformat(),
                 'processing_time': str(datetime.datetime.now() - start_timestamp),
-                'num_files_received': str(received_files_count),
+                'num_files_folders_received': str(received_files_dirs_count),
                 'num_records_added': str(datapoint_count)
             }
             }

@@ -131,7 +131,7 @@ def transformProps(propMetaDict, propValDict):
     return dict(newProps)
 
 def parse_file_header_line(linestr):
-    return map(lambda x: json.loads(x), str(linestr).split(','))
+    return [json.loads(x) for x in str(linestr).split(',')]
 
 # ----------------------------------------------------------------------
 # Parse the CSV file and return a list of dictionaries.
@@ -160,7 +160,8 @@ def parse_file(filepath, utc_offset = ISO_8601_UTC_MEAN):
 
         # Associate the above lists.
         props = dict()
-        for x in xrange(len(prop_names)):
+        import logging
+        for x in range(0, len(prop_names)):
             props[prop_names[x]] = {
                 'title': prop_names[x],
                 'unit': prop_units[x],
@@ -307,7 +308,7 @@ def aggregate_chunk(dataChunk, tz, startTime, endTime):
         return None
     else:
         # Prepare the list of properties for aggregation.
-        propertiesList = map(lambda x: x['properties'], dataChunk)
+        propertiesList = [x['properties'] for x in dataChunk]
 
         return {
             'start_time': datetime.datetime.fromtimestamp(startTime, tz).isoformat(),
