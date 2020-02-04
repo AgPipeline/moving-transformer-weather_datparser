@@ -8,7 +8,7 @@ Below is a sample command line that shows how the Weather DAT File Parser Docker
 An explanation of the command line options used follows.
 Be sure to read up on the [docker run](https://docs.docker.com/engine/reference/run/) command line for more information.
 
-The files used in this sample command line can be found on [Google Drive]().
+The files used in this sample command line can be found on [Google Drive](https://drive.google.com/file/d/1St8vvAqnYR4nndXjahFi8hF4U4CBYvGc/view?usp=sharing).
 
 ```sh
 docker run --rm --mount "src=/home/test,target=/mnt,type=bind" agpipeline/weather_datparser:3.0 --working_space "/mnt" --clowder_url "<Clowder URL>" --clowder_key "<Clowder Key>" "/mnt/2017-05-08"
